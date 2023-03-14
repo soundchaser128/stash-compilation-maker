@@ -5,7 +5,6 @@ import {
   LoaderFunction,
   Outlet,
   useLoaderData,
-  useLocation,
   useNavigate,
   useNavigation,
 } from "react-router-dom"
@@ -17,30 +16,13 @@ export const loader: LoaderFunction = async () => {
   return response.ok
 }
 
-const stageMap = {
-  [FormStage.SelectMode]: "/",
-  [FormStage.SelectCriteria]: "/select-criteria",
-  [FormStage.SelectMarkers]: "/select-markers",
-  [FormStage.VideoOptions]: "/video-options",
-  [FormStage.Wait]: "/progress",
-}
-
 export default function Root() {
   const {state, actions} = useStateMachine({resetForm})
   const stage = state.data.stage
-  const correctUrl = stageMap[stage]
-  const location = useLocation()
   const navigate = useNavigate()
   const navigation = useNavigation()
   const isLoading = navigation.state === "loading"
   const configExists = useLoaderData() as boolean
-  console.log({configExists})
-
-  // useEffect(() => {
-  //   if (location.pathname !== correctUrl) {
-  //     navigate(correctUrl)
-  //   }
-  // }, [, correctUrl, location])
 
   useEffect(() => {
     if (!configExists) {
@@ -93,6 +75,14 @@ export default function Root() {
               )}
             >
               Select markers
+            </li>
+            <li
+              className={clsx(
+                "step",
+                stage >= FormStage.PreviewClips && "step-primary"
+              )}
+            >
+              Preview clips
             </li>
             <li
               className={clsx(

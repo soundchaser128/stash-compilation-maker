@@ -1,12 +1,17 @@
-use crate::{config::Config, Result};
+use crate::{config::Config, http::FilterMode, Result};
 use graphql_client::{GraphQLQuery, Response};
 use reqwest::Client;
 
 use self::{
-    find_markers_query::FindMarkersQueryFindSceneMarkersSceneMarkers,
-    find_performers_query::FindPerformersQueryFindPerformersPerformers,
-    find_tags_query::FindTagsQueryFindTagsTags,
+    find_markers_query::{
+        CriterionModifier, FindFilterType, FindMarkersQueryFindSceneMarkersSceneMarkers,
+        HierarchicalMultiCriterionInput, MultiCriterionInput, SceneMarkerFilterType,
+    },
+    find_performers_query::FindPerformersQueryFindPerformersPerformers as Performer,
+    find_tags_query::FindTagsQueryFindTagsTags as Tag,
 };
+
+pub type GqlMarker = FindMarkersQueryFindSceneMarkersSceneMarkers;
 
 #[derive(GraphQLQuery)]
 #[graphql(
@@ -56,10 +61,8 @@ impl Api {
         Ok(Self::new(&config.stash_url, &config.api_key))
     }
 
-    pub async fn find_tags(
-        &self,
-        variables: find_tags_query::Variables,
-    ) -> Result<Vec<FindTagsQueryFindTagsTags>> {
+    pub async fn find_tags(&self) -> Result<Vec<Tag>> {
+        let variables = find_tags_query::Variables {};
         let request_body = FindTagsQuery::build_query(variables);
         let url = format!("{}/graphql", self.api_url);
         tracing::debug!("url = '{url}', api key = '{}'", self.api_key);
@@ -78,10 +81,45 @@ impl Api {
         Ok(tags)
     }
 
-    pub async fn find_markers(
-        &self,
-        variables: find_markers_query::Variables,
-    ) -> Result<Vec<FindMarkersQueryFindSceneMarkersSceneMarkers>> {
+    pub async fn find_markers(&self, ids: Vec<String>, mode: FilterMode) -> Result<Vec<GqlMarker>> {
+        let mut scene_filter = SceneMarkerFilterType {
+            created_at: None,
+            scene_created_at: None,
+            scene_updated_at: None,
+            updated_at: None,
+            performers: None,
+            scene_date: None,
+            scene_tags: None,
+            tag_id: None,
+            tags: None,
+        };
+
+        match mode {
+            FilterMode::Performers => {
+                scene_filter.performers = Some(MultiCriterionInput {
+                    modifier: CriterionModifier::INCLUDES,
+                    value: Some(ids),
+                });
+            }
+            FilterMode::Tags => {
+                scene_filter.tags = Some(HierarchicalMultiCriterionInput {
+                    depth: None,
+                    modifier: CriterionModifier::INCLUDES,
+                    value: Some(ids),
+                });
+            }
+        }
+        let variables = find_markers_query::Variables {
+            filter: Some(FindFilterType {
+                per_page: Some(-1),
+                page: None,
+                q: None,
+                sort: None,
+                direction: None,
+            }),
+            scene_marker_filter: Some(scene_filter),
+        };
+
         let request_body = FindMarkersQuery::build_query(variables);
         let url = format!("{}/graphql", self.api_url);
         let response = self
@@ -98,10 +136,8 @@ impl Api {
         Ok(markers.find_scene_markers.scene_markers)
     }
 
-    pub async fn find_performers(
-        &self,
-        variables: find_performers_query::Variables,
-    ) -> Result<Vec<FindPerformersQueryFindPerformersPerformers>> {
+    pub async fn find_performers(&self) -> Result<Vec<Performer>> {
+        let variables = find_performers_query::Variables {};
         let request_body = FindPerformersQuery::build_query(variables);
         let url = format!("{}/graphql", self.api_url);
         let response = self

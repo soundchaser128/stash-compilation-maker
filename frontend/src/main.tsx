@@ -15,6 +15,7 @@ import Progress from "./routes/progress"
 import {nanoid} from "nanoid"
 import {loader as rootLoader} from "./routes/root"
 import ConfigPage from "./routes/config"
+import PreviewClips, {loader as clipLoader} from "./routes/clips"
 
 const router = createBrowserRouter([
   {
@@ -35,6 +36,11 @@ const router = createBrowserRouter([
         path: "/select-markers",
         element: <SelectMarkers />,
         loader: markerLoader,
+      },
+      {
+        path: "/clips",
+        element: <PreviewClips />,
+        loader: clipLoader,
       },
       {
         path: "/video-options",

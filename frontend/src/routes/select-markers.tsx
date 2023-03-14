@@ -1,9 +1,11 @@
 import {useStateMachine} from "little-state-machine"
 import {useState} from "react"
 import {LoaderFunction, useLoaderData, useNavigate} from "react-router-dom"
-import {FormStage, FormState} from "../types/types"
+import {FormStage, FormState, SelectedMarker} from "../types/types"
 import {updateForm} from "./actions"
-import {formatDistance} from "date-fns"
+import {formatDistance, formatDuration} from "date-fns"
+import produce from "immer"
+import clsx from "clsx"
 
 interface Marker {
   id: string
@@ -48,8 +50,17 @@ function getDuration({start, end}: Marker): number {
   }
 }
 
-const formatDuration = (s: number) =>
-  formatDistance(0, s * 1000, {includeSeconds: true})
+function formatSeconds(s: number) {
+  const date = new Date(s * 1000)
+  return formatDuration(
+    {
+      hours: date.getUTCHours(),
+      minutes: date.getUTCMinutes(),
+      seconds: date.getUTCSeconds(),
+    },
+    {format: ["hours", "minutes", "seconds"]}
+  )
+}
 
 function filterMarkers(markers: Marker[], filter?: string) {
   if (!filter || filter.trim().length === 0) {
@@ -68,8 +79,11 @@ function filterMarkers(markers: Marker[], filter?: string) {
 function SelectMarkers() {
   const {state, actions} = useStateMachine({updateForm})
   const data = useLoaderData() as Data
-  const [selection, setSelection] = useState(
-    () => state.data.selectedMarkers || data.markers.dtos.map((m) => m.id)
+  const [selection, setSelection] = useState<boolean[]>(() =>
+    data.markers.dtos.map((m) => true)
+  )
+  const [durations, setDurations] = useState<number[]>(
+    data.markers.dtos.map((m) => getDuration(m))
   )
   const [filter, setFilter] = useState("")
   const [videoPreview, setVideoPreview] = useState<string>()
@@ -84,27 +98,41 @@ function SelectMarkers() {
     }
   }
 
-  const totalDuration = formatDuration(
-    markers
-      .filter((m) => selection.includes(m.id))
-      .reduce((total, marker) => total + getDuration(marker), 0)
+  const totalDuration = formatSeconds(
+    durations
+      .filter((t, index) => selection[index])
+      .reduce((sum, next) => sum + next, 0)
   )
 
-  const onCheckboxChange = (id: string, checked: boolean) => {
-    if (checked) {
-      setSelection((s) => [...s, id])
-    } else {
-      setSelection((s) => s.filter((string) => string !== id))
-    }
+  const onCheckboxChange = (index: number, checked: boolean) => {
+    setSelection((s) =>
+      produce(s, (draft) => {
+        draft[index] = checked
+      })
+    )
   }
 
   const onNextStage = () => {
+    const selectedMarkers = []
+    for (let i = 0; i < selection.length; i++) {
+      const marker = data.markers.dtos[i]
+      const duration = durations[i]
+      const selected = selection[i]
+
+      if (selected) {
+        selectedMarkers.push({
+          id: marker.id,
+          duration: duration,
+        })
+      }
+    }
+
     actions.updateForm({
-      stage: FormStage.VideoOptions,
-      selectedMarkers: selection,
+      stage: FormStage.PreviewClips,
+      selectedMarkers,
       markers: data.markers.gql,
     })
-    navigate("/video-options")
+    navigate("/clips")
   }
 
   return (
@@ -130,8 +158,14 @@ function SelectMarkers() {
         </button>
       </div>
       <section className="grid grid-cols-4 gap-2 w-full">
-        {markers.map((marker) => (
-          <article key={marker.id} className="card bg-base-100 shadow-xl">
+        {markers.map((marker, index) => (
+          <article
+            key={marker.id}
+            className={clsx(
+              "card card-compact bg-base-100 shadow-xl",
+              !selection[index] && "opacity-50"
+            )}
+          >
             <figure>
               {videoPreview === marker.id && (
                 <video muted autoPlay src={marker.streamUrl} />
@@ -155,34 +189,55 @@ function SelectMarkers() {
               </p>
               <p>
                 <strong>Duration: </strong>
-                {formatDuration(getDuration(marker))}
+                {formatSeconds(durations[index])}
               </p>
-              <div className="card-actions justify-between">
-                <div className="form-control">
-                  <label className="label cursor-pointer">
-                    <span className="label-text">Video preview</span>
-                    <input
-                      onChange={(e) =>
-                        onVideoPreviewChange(marker.id, e.target.checked)
-                      }
-                      checked={videoPreview === marker.id}
-                      type="checkbox"
-                      className="toggle ml-2"
-                    />
-                  </label>
+              <div className="">
+                <div className="w-full">
+                  <input
+                    value={durations[index]}
+                    onChange={(e) =>
+                      setDurations((durations) =>
+                        produce(durations, (draft) => {
+                          draft[index] = e.target.valueAsNumber
+                        })
+                      )
+                    }
+                    disabled={!selection[index]}
+                    max={getDuration(marker)}
+                    min={15}
+                    type="range"
+                    className="range range-primary w-full"
+                  />
                 </div>
-                <div className="form-control">
-                  <label className="label cursor-pointer">
-                    <span className="label-text">Include</span>
-                    <input
-                      type="checkbox"
-                      className="checkbox checkbox-primary ml-2"
-                      checked={selection.includes(marker.id)}
-                      onChange={(e) =>
-                        onCheckboxChange(marker.id, e.target.checked)
-                      }
-                    />
-                  </label>
+
+                <div className="card-actions justify-between">
+                  <div className="form-control">
+                    <label className="label cursor-pointer">
+                      <span className="label-text">Video preview</span>
+                      <input
+                        onChange={(e) =>
+                          onVideoPreviewChange(marker.id, e.target.checked)
+                        }
+                        checked={videoPreview === marker.id}
+                        disabled={!selection[index]}
+                        type="checkbox"
+                        className="toggle ml-2"
+                      />
+                    </label>
+                  </div>
+                  <div className="form-control">
+                    <label className="label cursor-pointer">
+                      <span className="label-text">Include</span>
+                      <input
+                        type="checkbox"
+                        className="checkbox checkbox-primary ml-2"
+                        checked={selection[index]}
+                        onChange={(e) =>
+                          onCheckboxChange(index, e.target.checked)
+                        }
+                      />
+                    </label>
+                  </div>
                 </div>
               </div>
             </div>

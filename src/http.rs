@@ -19,16 +19,12 @@ use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 
 use crate::{
+    clip::{self, Clip, ClipOrder},
     config::{self, Config},
     error::AppError,
-    ffmpeg::{self, ClipOrder},
+    ffmpeg,
     stash_api::{
-        find_markers_query::{
-            self, CriterionModifier, FindFilterType,
-            FindMarkersQueryFindSceneMarkersSceneMarkers as GqlMarker,
-            HierarchicalMultiCriterionInput, MultiCriterionInput, SceneMarkerFilterType,
-        },
-        find_performers_query, find_tags_query, Api,
+        find_markers_query::FindMarkersQueryFindSceneMarkersSceneMarkers as GqlMarker, Api,
     },
     AppState,
 };
@@ -61,6 +57,32 @@ pub struct Marker {
     pub scene_title: Option<String>,
     pub performers: Vec<String>,
     pub file_name: String,
+}
+
+impl Marker {
+    pub fn from(value: GqlMarker, api_key: &str) -> Self {
+        Marker {
+            id: value.id,
+            primary_tag: value.primary_tag.name,
+            stream_url: add_api_key(&value.stream, api_key),
+            screenshot_url: add_api_key(&value.screenshot, api_key),
+            start: value.seconds as u32,
+            end: value
+                .scene
+                .scene_markers
+                .iter()
+                .find(|m| m.seconds > value.seconds)
+                .map(|m| m.seconds as u32),
+            scene_title: value.scene.title,
+            performers: value.scene.performers.into_iter().map(|p| p.name).collect(),
+            file_name: value
+                .scene
+                .files
+                .get(0)
+                .map(|f| f.basename.clone())
+                .unwrap_or_else(|| "<no name>".to_string()),
+        }
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -104,6 +126,13 @@ impl Resolution {
     }
 }
 
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedMarker {
+    pub id: String,
+    pub duration: Option<u32>,
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateVideoBody {
@@ -113,7 +142,7 @@ pub struct CreateVideoBody {
     pub clip_duration: u32,
     pub output_resolution: Resolution,
     pub output_fps: u32,
-    pub selected_markers: Vec<String>,
+    pub selected_markers: Vec<SelectedMarker>,
     pub markers: Vec<GqlMarker>,
     pub id: String,
 }
@@ -127,7 +156,7 @@ fn add_api_key(url: &str, api_key: &str) -> String {
 #[axum::debug_handler]
 pub async fn fetch_tags() -> Result<Json<Vec<Tag>>, AppError> {
     let api = Api::load_config().await?;
-    let tags = api.find_tags(find_tags_query::Variables {}).await?;
+    let tags = api.find_tags().await?;
     let mut tags: Vec<_> = tags
         .into_iter()
         .map(|t| Tag {
@@ -148,9 +177,7 @@ pub async fn fetch_tags() -> Result<Json<Vec<Tag>>, AppError> {
 pub async fn fetch_performers() -> Result<Json<Vec<Performer>>, AppError> {
     let config = Config::get().await?;
     let api = Api::from_config(&config);
-    let performers = api
-        .find_performers(find_performers_query::Variables {})
-        .await?;
+    let performers = api.find_performers().await?;
     let mut performers: Vec<_> = performers
         .into_iter()
         .map(|p| Performer {
@@ -170,74 +197,19 @@ pub async fn fetch_performers() -> Result<Json<Vec<Performer>>, AppError> {
 
 #[axum::debug_handler]
 pub async fn fetch_markers(
-    state: State<Arc<AppState>>,
     Query(query): Query<MarkerOptions>,
 ) -> Result<Json<MarkerResult>, AppError> {
     let config = Config::get().await?;
     let api = Api::from_config(&config);
     tracing::info!("fetching markers for query {query:?}");
-
-    let mut scene_filter = SceneMarkerFilterType {
-        created_at: None,
-        scene_created_at: None,
-        scene_updated_at: None,
-        updated_at: None,
-        performers: None,
-        scene_date: None,
-        scene_tags: None,
-        tag_id: None,
-        tags: None,
-    };
-
     let ids: Vec<_> = query.selected_ids.split(',').map(From::from).collect();
 
-    match query.mode {
-        FilterMode::Performers => {
-            scene_filter.performers = Some(MultiCriterionInput {
-                modifier: CriterionModifier::INCLUDES,
-                value: Some(ids),
-            });
-        }
-        FilterMode::Tags => {
-            scene_filter.tags = Some(HierarchicalMultiCriterionInput {
-                depth: None,
-                modifier: CriterionModifier::INCLUDES,
-                value: Some(ids),
-            });
-        }
-    }
-
-    let gql_markers = api
-        .find_markers(find_markers_query::Variables {
-            filter: Some(FindFilterType {
-                per_page: Some(-1),
-                page: None,
-                q: None,
-                sort: None,
-                direction: None,
-            }),
-            scene_marker_filter: Some(scene_filter),
-        })
-        .await?;
-
+    let gql_markers = api.find_markers(ids, query.mode).await?;
     let api_key = &config.api_key;
     let dtos = gql_markers
         .clone()
         .into_iter()
-        .map(|m| {
-            let (_, end) = state.ffmpeg.get_time_range(&m);
-            Marker {
-                id: m.id,
-                primary_tag: m.primary_tag.name,
-                stream_url: add_api_key(&m.stream, api_key),
-                screenshot_url: add_api_key(&m.screenshot, api_key),
-                start: m.seconds as u32,
-                end,
-                file_name: m.scene.files[0].basename.clone(),
-                performers: m.scene.performers.into_iter().map(|p| p.name).collect(),
-                scene_title: m.scene.title,
-            }
-        })
+        .map(|m| Marker::from(m, api_key))
         .collect();
 
     Ok(Json(MarkerResult {
@@ -251,7 +223,7 @@ async fn create_video_inner(
     mut body: CreateVideoBody,
 ) -> Result<(), AppError> {
     body.markers
-        .retain(|e| body.selected_markers.contains(&e.id));
+        .retain(|e| body.selected_markers.iter().any(|m| m.id == e.id));
     let clips = state.ffmpeg.gather_clips(&body).await?;
     state.ffmpeg.compile_clips(clips, &body).await?;
 
@@ -308,10 +280,10 @@ pub async fn download_video(
 }
 
 #[axum::debug_handler]
-pub async fn get_config() -> StatusCode {
+pub async fn get_config() -> impl IntoResponse {
     match Config::get().await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::NOT_FOUND,
+        Ok(config) => Json(Some(config)),
+        Err(_) => Json(None),
     }
 }
 
@@ -321,4 +293,11 @@ pub async fn set_config(Json(config): Json<Config>) -> Result<StatusCode, AppErr
     config::set_config(config).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[axum::debug_handler]
+pub async fn fetch_clips(Json(body): Json<CreateVideoBody>) -> Json<Vec<Clip>> {
+    let clips = clip::get_all_clips(&body);
+    let clips = clip::compile_clips(clips, ClipOrder::SceneOrder);
+    Json(clips)
 }

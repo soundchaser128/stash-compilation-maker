@@ -29,7 +29,7 @@ function ConfigPage() {
         <h1 className="text-4xl font-bold mb-4 text-center">
           Configuration setup
         </h1>
-        <form onSubmit={handleSubmit(onSubmit)} className="max-w-sm w-full">
+        <form onSubmit={handleSubmit(onSubmit)} className="max-w-lg w-full">
           <div className="form-control">
             <label className="label">
               <span className="label-text">URL of your Stash instance:</span>

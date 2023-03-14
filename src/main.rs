@@ -5,6 +5,7 @@ use axum::{
 };
 use std::{sync::Arc, time::Duration};
 
+mod clip;
 mod config;
 mod download_ffmpeg;
 mod error;
@@ -12,6 +13,7 @@ mod ffmpeg;
 mod http;
 mod stash_api;
 mod static_files;
+mod util;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -42,6 +44,7 @@ async fn main() -> Result<()> {
         .route("/api/tags", get(http::fetch_tags))
         .route("/api/performers", get(http::fetch_performers))
         .route("/api/markers", get(http::fetch_markers))
+        .route("/api/clips", get(http::fetch_clips))
         .route("/api/create", post(http::create_video))
         .route("/api/progress", get(http::get_progress))
         .route("/api/download/:id", get(http::download_video))
